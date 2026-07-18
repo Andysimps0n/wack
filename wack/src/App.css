@@ -2,6 +2,18 @@ body {
   margin: 0;
 }
 
+/* Tall page that gives the user room to scroll (3 screens worth). */
+.scroll-container {
+  height: 300vh;
+}
+
+/* Keeps the canvas pinned to the viewport while the page scrolls. */
+.sticky-canvas {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
 .wack-wrapper {
   width: 100vw;
   height: 100vh;

@@ -1,3 +1,5 @@
+import { RigidBody, CuboidCollider } from "@react-three/rapier";
+
 export default function CubeBackground({ size }) {
   const half = size / 2;
 
@@ -8,6 +10,12 @@ export default function CubeBackground({ size }) {
         <planeGeometry args={[size, size]} />
         <meshStandardMaterial color="#d9f47e" />
       </mesh>
+
+      {/* Invisible physics floor so apple pieces land on the visual floor
+          instead of falling through it. */}
+      <RigidBody type="fixed">
+        <CuboidCollider args={[half, 0.1, half]} position={[0, -0.1, 0]} />
+      </RigidBody>
 
       {/* Left Wall */}
       <mesh rotation={[0, Math.PI / 2, 0]} position={[-half, half, 0]}>
