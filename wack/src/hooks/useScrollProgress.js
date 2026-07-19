@@ -12,6 +12,13 @@ export default function useScrollProgress() {
       setProgress(maxScroll > 0 ? window.scrollY / maxScroll : 0);
     }
 
+    // Prevent the browser from restoring scroll position on refresh, and
+    // start at the top so the metal plane re-inits at START_Y.
+    if ("scrollRestoration" in history) {
+      history.scrollRestoration = "manual";
+    }
+    window.scrollTo(0, 0);
+
     handleScroll();
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);

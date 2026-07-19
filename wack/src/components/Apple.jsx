@@ -18,8 +18,8 @@ const APPLE_SCALE = 2;
 const PLANE_HALF_THICKNESS = 0.125;
 
 export default function Apple({ planeYRef }) {
-  const whole = useGLTF("/models/apple.glb");
-  const broken = useGLTF("/models/broken_apple2.glb");
+  const whole = useGLTF("/models/apple_wax1.glb");
+  const broken = useGLTF("/models/broken_apple15.glb");
 
   const [phase, setPhase] = useState("intact");
   const phaseRef = useRef("intact");
@@ -119,11 +119,11 @@ export default function Apple({ planeYRef }) {
           <RigidBody
             key={piece.name}
             type="dynamic"
-            colliders="hull"
+            colliders="ball"
             position={piece.position}
-            restitution={0.3}
-            friction={0.8}
-            ccd
+            restitution={0.1}
+            friction={2}
+            ccd={false}
           >
             <primitive object={piece.object} scale={APPLE_SCALE} />
           </RigidBody>

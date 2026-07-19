@@ -2,7 +2,7 @@
 
 // How much of the apple's height the plate must push through before the
 // apple shatters (0 = breaks on touch, 1 = breaks only when fully flat).
-export const BREAK_THRESHOLD = 0.45;
+export const BREAK_THRESHOLD = 0.1;
 
 // Y scale of the apple at the moment it breaks. Keeping this equal to
 // 1 - BREAK_THRESHOLD makes the apple's top follow the plate's bottom
