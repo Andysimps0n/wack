@@ -1,14 +1,28 @@
 import { useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { RigidBody } from "@react-three/rapier";
+import { RigidBody, interactionGroups } from "@react-three/rapier";
 import { ActiveCollisionTypes } from "@dimforge/rapier3d-compat";
-import { Box3, MathUtils } from "three";
+import {
+  Box3,
+  FrontSide,
+  MathUtils,
+  MeshPhysicalMaterial,
+} from "three";
 import {
   BREAK_THRESHOLD,
   MIN_SQUASH_Y,
   MAX_BULGE_XZ,
+  WAX_SLICE_PREFIX,
+  WAX_CONTACT_EPS,
+  WAX_CRACK_FALLOFF,
+  WAX_CHIP_IMPULSE,
 } from "../constants/crush";
+import {
+  collectWaxSlices,
+  sliceRestTopY,
+  computeCrackAmount,
+} from "../utils/waxContact";
 
 const APPLE_POSITION = [0, 2, 0];
 const APPLE_SCALE = 2;
@@ -17,14 +31,90 @@ const APPLE_SCALE = 2;
 // below the plane's center Y (see MetalPlane's CuboidCollider args).
 const PLANE_HALF_THICKNESS = 0.125;
 
+// Rapier interaction groups. A freshly detached chip's hull overlaps the
+// intact apple's hull (the chip hugs the apple's surface), and letting
+// those two colliders touch would eject the chip violently. So the apple
+// and the chips live in their own groups and both only collide with the
+// "everything else" group 0 (floor, plate, broken apple pieces).
+const APPLE_GROUPS = interactionGroups(2, [0]);
+const CHIP_GROUPS = interactionGroups(1, [0]);
+
+// Builds the translucent wax material plus a crack overlay driven by the
+// per-chip `uCrack` uniform (0 = pristine, 1 = about to snap). The crack
+// pattern uses the mesh's local position so it stays glued to the surface
+// while the apple squashes.
+function makeWaxMaterial(source) {
+  const crackUniform = { value: 0 };
+
+  const material = new MeshPhysicalMaterial({
+    color: source.color?.clone(),
+    transparent: true,
+    opacity: 0.68,
+    transmission: 0.02,
+    thickness: 0.38,
+    roughness: 0.48,
+    metalness: 0,
+    ior: 1.45,
+    depthWrite: false,
+    side: FrontSide,
+  });
+
+  // let three.js compile the program once and reuse it.
+  material.customProgramCacheKey = () => "apple-wax-crack";
+
+  return { material, crackUniform };
+}
+
+function configureAppleMaterials(root) {
+  root.traverse((child) => {
+    if (!child.isMesh) return;
+
+    const materialName = child.material?.name ?? "";
+    const isWax =
+      child.name.startsWith(WAX_SLICE_PREFIX) ||
+      materialName === "AppleWaxMat";
+
+    if (isWax) {
+      const { material, crackUniform } = makeWaxMaterial(child.material);
+      child.material = material;
+      // collectWaxSlices picks this up so useFrame can drive the shader.
+      child.userData.crackUniform = crackUniform;
+      // Draw wax after the opaque apple body so you see through to the fruit.
+      child.renderOrder = 2;
+      return;
+    }
+
+    child.renderOrder = 0;
+  });
+}
+
 export default function Apple({ planeYRef }) {
-  const whole = useGLTF("/models/apple_wax1.glb");
+  const whole = useGLTF("/models/apple_c1.glb");
   const broken = useGLTF("/models/broken_apple15.glb");
 
   const [phase, setPhase] = useState("intact");
   const phaseRef = useRef("intact");
   const visualRef = useRef(null);
-  const wholeApple = useMemo(() => whole.scene.clone(true), [whole.scene]);
+
+  // Wax chips that have snapped off and now live as free physics bodies.
+  // They persist across the apple's own break (nice debris).
+  const [chips, setChips] = useState([]);
+
+  const wholeApple = useMemo(() => {
+    const clone = whole.scene.clone(true);
+
+    // this function applies texture to apple.
+    // the wax is not replaced; the texture is applied.
+    configureAppleMaterials(clone);
+    return clone;
+  }, [whole.scene]);
+
+  // One record per wax chip mesh (sorted top-to-bottom): rest-space Y
+  // bounds, outward pop direction, and its crack shader uniform.
+  const waxSlices = useMemo(
+    () => collectWaxSlices(wholeApple, WAX_SLICE_PREFIX),
+    [wholeApple]
+  );
 
   const bounds = useMemo(() => {
     const box = new Box3().setFromObject(whole.scene);
@@ -80,14 +170,21 @@ export default function Apple({ planeYRef }) {
 
     // phase === 'squeezing'
     if (compression >= BREAK_THRESHOLD) {
+      // Apple shatters; already-detached wax chips stay as debris and any
+      // wax still attached vanishes along with the intact visual.
       changePhase("broken");
       return;
     }
     if (compression <= 0) {
       // Plate lifted off before the threshold: spring back to normal.
+      // Chips that already snapped off stay off (wax doesn't heal), but
+      // the cracks on still-attached wax fade out.
       changePhase("intact");
       visualRef.current.scale.setScalar(APPLE_SCALE);
       visualRef.current.position.set(...APPLE_POSITION);
+      for (const slice of waxSlices) {
+        if (!slice.detached) slice.crackUniform.value = 0;
+      }
       return;
     }
 
@@ -110,11 +207,73 @@ export default function Apple({ planeYRef }) {
     const groupY =
       APPLE_POSITION[1] + bounds.minY * APPLE_SCALE * (1 - squashY);
     visualRef.current.position.set(APPLE_POSITION[0], groupY, APPLE_POSITION[2]);
+
+    // Wax break: a chip snaps off once the plate has crushed past the
+    // chip's REST-position top. (The squashed mesh always stays below the
+    // plate because the apple's top tracks it, so we compare against where
+    // the wax originally was — brittle wax breaks instead of compressing.)
+    const detachedNow = [];
+    for (const slice of waxSlices) {
+      if (slice.detached) continue;
+
+      const restTopY = sliceRestTopY(slice, APPLE_POSITION[1], APPLE_SCALE);
+
+      if (planeBottom - restTopY <= WAX_CONTACT_EPS) {
+        slice.detached = true;
+        // Freeze the chip's crack pattern at full strength as debris.
+        slice.crackUniform.value = 1;
+        slice.object.removeFromParent();
+        detachedNow.push({
+          id: slice.id,
+          object: slice.object,
+          // Spawn with the squashed group's exact transform so the chip
+          // doesn't visibly jump on the frame it detaches.
+          position: [APPLE_POSITION[0], groupY, APPLE_POSITION[2]],
+          scale: [
+            APPLE_SCALE * bulgeXZ,
+            APPLE_SCALE * squashY,
+            APPLE_SCALE * bulgeXZ,
+          ],
+          velocity: [
+            slice.outward.x * WAX_CHIP_IMPULSE,
+            0.5,
+            slice.outward.z * WAX_CHIP_IMPULSE,
+          ],
+        });
+      } else {
+        // Not reached yet: crack it in proportion to how close the plate
+        // is. Only the band(s) near the contact front get a visible value.
+        slice.crackUniform.value = computeCrackAmount(
+          planeBottom,
+          restTopY,
+          WAX_CRACK_FALLOFF
+        );
+      }
+    }
+    if (detachedNow.length > 0) {
+      setChips((prev) => [...prev, ...detachedNow]);
+    }
   });
+
+  const chipBodies = chips.map((chip) => (
+    <RigidBody
+      key={chip.id}
+      type="dynamic"
+      colliders="hull"
+      position={chip.position}
+      linearVelocity={chip.velocity}
+      collisionGroups={CHIP_GROUPS}
+      restitution={0.05}
+      friction={1}
+    >
+      <primitive object={chip.object} scale={chip.scale} />
+    </RigidBody>
+  ));
 
   if (phase === "broken") {
     return (
       <>
+        {chipBodies}
         {pieces.map((piece) => (
           <RigidBody
             key={piece.name}
@@ -133,22 +292,26 @@ export default function Apple({ planeYRef }) {
   }
 
   return (
-    <RigidBody
-      type="fixed"
-      colliders="hull"
-      // The metal plane is kinematic and this body is fixed; Rapier skips
-      // kinematic-vs-fixed contacts unless we opt in explicitly.
-      activeCollisionTypes={
-        ActiveCollisionTypes.DEFAULT | ActiveCollisionTypes.KINEMATIC_FIXED
-      }
-      onCollisionEnter={handleCollisionEnter}
-    >
-      <group ref={visualRef} position={APPLE_POSITION} scale={APPLE_SCALE}>
-        <primitive object={wholeApple} />
-      </group>
-    </RigidBody>
+    <>
+      {chipBodies}
+      <RigidBody
+        type="fixed"
+        colliders="hull"
+        collisionGroups={APPLE_GROUPS}
+        // The metal plane is kinematic and this body is fixed; Rapier skips
+        // kinematic-vs-fixed contacts unless we opt in explicitly.
+        activeCollisionTypes={
+          ActiveCollisionTypes.DEFAULT | ActiveCollisionTypes.KINEMATIC_FIXED
+        }
+        onCollisionEnter={handleCollisionEnter}
+      >
+        <group ref={visualRef} position={APPLE_POSITION} scale={APPLE_SCALE}>
+          <primitive object={wholeApple} />
+        </group>
+      </RigidBody>
+    </>
   );
 }
 
-useGLTF.preload("/models/apple.glb");
-useGLTF.preload("/models/broken_apple2.glb");
+useGLTF.preload("/models/apple_c1.glb");
+useGLTF.preload("/models/broken_apple15.glb");

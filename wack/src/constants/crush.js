@@ -2,7 +2,7 @@
 
 // How much of the apple's height the plate must push through before the
 // apple shatters (0 = breaks on touch, 1 = breaks only when fully flat).
-export const BREAK_THRESHOLD = 0.1;
+export const BREAK_THRESHOLD = 0.625;
 
 // Y scale of the apple at the moment it breaks. Keeping this equal to
 // 1 - BREAK_THRESHOLD makes the apple's top follow the plate's bottom
@@ -11,3 +11,20 @@ export const MIN_SQUASH_Y = 1 - BREAK_THRESHOLD;
 
 // How much the apple bulges outward on X/Z at full squeeze.
 export const MAX_BULGE_XZ = 1.2;
+
+// --- Wax breaking (contact-based, independent of BREAK_THRESHOLD) ---
+
+// Meshes in apple_c1.glb whose name starts with this are wax chips.
+export const WAX_SLICE_PREFIX = "AppleWax_";
+
+// A chip snaps off when the plate's bottom gets within this world-space
+// distance of the chip's rest-position top (slightly early, so the plate
+// never visibly overlaps unbroken wax).
+export const WAX_CONTACT_EPS = 0.02;
+
+// World-space distance over which the crack visual fades in on the chips
+// the plate is approaching. Larger = cracks appear earlier.
+export const WAX_CRACK_FALLOFF = 0.45;
+
+// Outward speed (m/s) given to a chip the moment it snaps off.
+export const WAX_CHIP_IMPULSE = 1.2;
