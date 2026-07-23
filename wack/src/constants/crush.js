@@ -22,9 +22,13 @@ export const WAX_SLICE_PREFIX = "AppleWax_";
 // never visibly overlaps unbroken wax).
 export const WAX_CONTACT_EPS = 0.02;
 
-// World-space distance over which the crack visual fades in on the chips
-// the plate is approaching. Larger = cracks appear earlier.
-export const WAX_CRACK_FALLOFF = 0.45;
-
 // Outward speed (m/s) given to a chip the moment it snaps off.
-export const WAX_CHIP_IMPULSE = 1.2;
+// Keep this modest so heavier chips don't fly like paper.
+export const WAX_CHIP_IMPULSE = 5;
+
+// Rapier mass for a detached wax chip. Higher = settles faster, less floaty.
+export const WAX_CHIP_MASS = 10 * 1000;
+
+// Extra uniform scale applied when a chip snaps off. The mesh already has
+// Solidify thickness; this just reads a bit chunkier in flight.
+export const WAX_CHIP_SCALE = 1 ;

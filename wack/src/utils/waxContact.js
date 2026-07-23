@@ -1,4 +1,4 @@
-import { Box3, MathUtils, Vector3 } from "three";
+import { Box3, Vector3 } from "three";
 
 // Pure helpers for the contact-local wax break. Everything here works in
 // the apple's rest space (the GLB's own coordinates, before APPLE_SCALE
@@ -34,8 +34,6 @@ export function collectWaxSlices(root, prefix) {
       localMaxY: box.max.y,
       outward,
       detached: false,
-      // Filled in by the material setup; drives the crack shader.
-      crackUniform: child.userData.crackUniform ?? { value: 0 },
     });
   });
 
@@ -48,10 +46,4 @@ export function collectWaxSlices(root, prefix) {
 // breaks once the plate crushes past its original (rest) height.
 export function sliceRestTopY(slice, appleBaseY, appleScale) {
   return appleBaseY + slice.localMaxY * appleScale;
-}
-
-// 0 = plate far above this chip, 1 = plate at the chip's rest top (about
-// to snap). Fades in over `falloff` world units of plate travel.
-export function computeCrackAmount(planeBottomY, restTopY, falloff) {
-  return MathUtils.clamp(1 - (planeBottomY - restTopY) / falloff, 0, 1);
 }

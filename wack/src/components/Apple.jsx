@@ -5,6 +5,7 @@ import { RigidBody, interactionGroups } from "@react-three/rapier";
 import { ActiveCollisionTypes } from "@dimforge/rapier3d-compat";
 import {
   Box3,
+  DoubleSide,
   FrontSide,
   MathUtils,
   MeshPhysicalMaterial,
@@ -15,13 +16,13 @@ import {
   MAX_BULGE_XZ,
   WAX_SLICE_PREFIX,
   WAX_CONTACT_EPS,
-  WAX_CRACK_FALLOFF,
   WAX_CHIP_IMPULSE,
+  WAX_CHIP_MASS,
+  WAX_CHIP_SCALE,
 } from "../constants/crush";
 import {
   collectWaxSlices,
   sliceRestTopY,
-  computeCrackAmount,
 } from "../utils/waxContact";
 
 const APPLE_POSITION = [0, 2, 0];
@@ -39,14 +40,9 @@ const PLANE_HALF_THICKNESS = 0.125;
 const APPLE_GROUPS = interactionGroups(2, [0]);
 const CHIP_GROUPS = interactionGroups(1, [0]);
 
-// Builds the translucent wax material plus a crack overlay driven by the
-// per-chip `uCrack` uniform (0 = pristine, 1 = about to snap). The crack
-// pattern uses the mesh's local position so it stays glued to the surface
-// while the apple squashes.
+// Translucent wax coat. Crack lines are not drawn — pieces just snap off.
 function makeWaxMaterial(source) {
-  const crackUniform = { value: 0 };
-
-  const material = new MeshPhysicalMaterial({
+  return new MeshPhysicalMaterial({
     color: source.color?.clone(),
     transparent: true,
     opacity: 0.68,
@@ -58,11 +54,23 @@ function makeWaxMaterial(source) {
     depthWrite: false,
     side: FrontSide,
   });
+}
 
-  // let three.js compile the program once and reuse it.
-  material.customProgramCacheKey = () => "apple-wax-crack";
-
-  return { material, crackUniform };
+// Detached chips were looking paper-thin: on the apple they read as a coat,
+// but alone the same translucent material + squashed scale looks skimpy.
+// Bump opacity / thickness and draw both sides so the shell rim reads solid.
+function thickenDetachedWax(object) {
+  object.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    const mat = child.material;
+    mat.opacity = 0.92;
+    mat.transmission = 0;
+    mat.thickness = 1.1;
+    mat.roughness = 0.55;
+    mat.depthWrite = true;
+    mat.side = DoubleSide;
+    mat.needsUpdate = true;
+  });
 }
 
 function configureAppleMaterials(root) {
@@ -75,10 +83,7 @@ function configureAppleMaterials(root) {
       materialName === "AppleWaxMat";
 
     if (isWax) {
-      const { material, crackUniform } = makeWaxMaterial(child.material);
-      child.material = material;
-      // collectWaxSlices picks this up so useFrame can drive the shader.
-      child.userData.crackUniform = crackUniform;
+      child.material = makeWaxMaterial(child.material);
       // Draw wax after the opaque apple body so you see through to the fruit.
       child.renderOrder = 2;
       return;
@@ -110,7 +115,7 @@ export default function Apple({ planeYRef }) {
   }, [whole.scene]);
 
   // One record per wax chip mesh (sorted top-to-bottom): rest-space Y
-  // bounds, outward pop direction, and its crack shader uniform.
+  // bounds and outward pop direction.
   const waxSlices = useMemo(
     () => collectWaxSlices(wholeApple, WAX_SLICE_PREFIX),
     [wholeApple]
@@ -177,14 +182,10 @@ export default function Apple({ planeYRef }) {
     }
     if (compression <= 0) {
       // Plate lifted off before the threshold: spring back to normal.
-      // Chips that already snapped off stay off (wax doesn't heal), but
-      // the cracks on still-attached wax fade out.
+      // Chips that already snapped off stay off (wax doesn't heal).
       changePhase("intact");
       visualRef.current.scale.setScalar(APPLE_SCALE);
       visualRef.current.position.set(...APPLE_POSITION);
-      for (const slice of waxSlices) {
-        if (!slice.detached) slice.crackUniform.value = 0;
-      }
       return;
     }
 
@@ -220,34 +221,22 @@ export default function Apple({ planeYRef }) {
 
       if (planeBottom - restTopY <= WAX_CONTACT_EPS) {
         slice.detached = true;
-        // Freeze the chip's crack pattern at full strength as debris.
-        slice.crackUniform.value = 1;
         slice.object.removeFromParent();
+        thickenDetachedWax(slice.object);
+        // Use full (un-squashed) scale so the chip keeps its baked shell
+        // thickness — inheriting squashY made shards look paper-flat.
+        const chipScale = APPLE_SCALE * WAX_CHIP_SCALE;
         detachedNow.push({
           id: slice.id,
           object: slice.object,
-          // Spawn with the squashed group's exact transform so the chip
-          // doesn't visibly jump on the frame it detaches.
           position: [APPLE_POSITION[0], groupY, APPLE_POSITION[2]],
-          scale: [
-            APPLE_SCALE * bulgeXZ,
-            APPLE_SCALE * squashY,
-            APPLE_SCALE * bulgeXZ,
-          ],
+          scale: [chipScale, chipScale, chipScale],
           velocity: [
             slice.outward.x * WAX_CHIP_IMPULSE,
-            0.5,
+            0.35,
             slice.outward.z * WAX_CHIP_IMPULSE,
           ],
         });
-      } else {
-        // Not reached yet: crack it in proportion to how close the plate
-        // is. Only the band(s) near the contact front get a visible value.
-        slice.crackUniform.value = computeCrackAmount(
-          planeBottom,
-          restTopY,
-          WAX_CRACK_FALLOFF
-        );
       }
     }
     if (detachedNow.length > 0) {
@@ -263,8 +252,11 @@ export default function Apple({ planeYRef }) {
       position={chip.position}
       linearVelocity={chip.velocity}
       collisionGroups={CHIP_GROUPS}
-      restitution={0.05}
-      friction={1}
+      mass={WAX_CHIP_MASS}
+      linearDamping={0.4}
+      angularDamping={0.55}
+      restitution={0.02}
+      friction={1.4}
     >
       <primitive object={chip.object} scale={chip.scale} />
     </RigidBody>
