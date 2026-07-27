@@ -27,7 +27,7 @@ export const WAX_CONTACT_EPS = 0.02;
 export const WAX_CHIP_IMPULSE = 5;
 
 // Rapier mass for a detached wax chip. Higher = settles faster, less floaty.
-export const WAX_CHIP_MASS = 10 * 1000;
+export const WAX_CHIP_MASS = 10;
 
 // Extra uniform scale applied when a chip snaps off. The mesh already has
 // Solidify thickness; this just reads a bit chunkier in flight.

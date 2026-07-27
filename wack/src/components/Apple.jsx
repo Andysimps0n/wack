@@ -56,17 +56,14 @@ function makeWaxMaterial(source) {
   });
 }
 
-// Detached chips were looking paper-thin: on the apple they read as a coat,
-// but alone the same translucent material + squashed scale looks skimpy.
-// Bump opacity / thickness and draw both sides so the shell rim reads solid.
-function thickenDetachedWax(object) {
+// A detached chip is a thin hollow shell, so keep its material close to the
+// attached coat. We only flip to DoubleSide (the open inner face is visible
+// while the chip tumbles) and enable depthWrite (a free-floating transparent
+// shell sorts against itself badly without it).
+function prepareDetachedWax(object) {
   object.traverse((child) => {
     if (!child.isMesh || !child.material) return;
     const mat = child.material;
-    mat.opacity = 0.92;
-    mat.transmission = 0;
-    mat.thickness = 1.1;
-    mat.roughness = 0.55;
     mat.depthWrite = true;
     mat.side = DoubleSide;
     mat.needsUpdate = true;
@@ -222,7 +219,7 @@ export default function Apple({ planeYRef }) {
       if (planeBottom - restTopY <= WAX_CONTACT_EPS) {
         slice.detached = true;
         slice.object.removeFromParent();
-        thickenDetachedWax(slice.object);
+        prepareDetachedWax(slice.object);
         // Use full (un-squashed) scale so the chip keeps its baked shell
         // thickness — inheriting squashY made shards look paper-flat.
         const chipScale = APPLE_SCALE * WAX_CHIP_SCALE;
