@@ -14,7 +14,7 @@ export function collectWaxSlices(root, prefix) {
 
 
     // the direction of chip when detaching 
-    const outward = new Vector3(center.x, center.y, center.z);
+    const outward = new Vector3(center.x, 0, center.z);
     if (outward.lengthSq() < 1e-6) {
       outward.set(0, 1, 0);
     } else {

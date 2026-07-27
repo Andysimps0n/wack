@@ -24,10 +24,13 @@ export const WAX_CONTACT_EPS = 0.02;
 
 // Outward speed (m/s) given to a chip the moment it snaps off.
 // Keep this modest so heavier chips don't fly like paper.
-export const WAX_CHIP_IMPULSE = 5;
 
-// Rapier mass for a detached wax chip. Higher = settles faster, less floaty.
-export const WAX_CHIP_MASS = 10;
+
+export const WAX_CHIP_IMPULSE = 0.1;
+
+// Debris-scale mass so chips settle on broken pieces instead of tunneling
+// through them (the old 100000 value ignored fragment contacts).
+export const WAX_CHIP_MASS = 2;
 
 // Extra uniform scale applied when a chip snaps off. The mesh already has
 // Solidify thickness; this just reads a bit chunkier in flight.

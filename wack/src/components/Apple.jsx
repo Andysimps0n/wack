@@ -254,6 +254,7 @@ export default function Apple({ planeYRef }) {
       angularDamping={0.55}
       restitution={0.02}
       friction={1.4}
+      ccd
     >
       <primitive object={chip.object} scale={chip.scale} />
     </RigidBody>
@@ -267,11 +268,11 @@ export default function Apple({ planeYRef }) {
           <RigidBody
             key={piece.name}
             type="dynamic"
-            colliders="ball"
+            colliders="hull"
             position={piece.position}
             restitution={0.1}
             friction={2}
-            ccd={false}
+            ccd
           >
             <primitive object={piece.object} scale={APPLE_SCALE} />
           </RigidBody>
