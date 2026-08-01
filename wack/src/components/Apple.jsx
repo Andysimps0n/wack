@@ -1,14 +1,20 @@
 import { useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { RigidBody, interactionGroups } from "@react-three/rapier";
+import {
+  RigidBody,
+  BallCollider,
+  interactionGroups,
+} from "@react-three/rapier";
 import { ActiveCollisionTypes } from "@dimforge/rapier3d-compat";
 import {
   Box3,
   DoubleSide,
   FrontSide,
+  Group,
   MathUtils,
   MeshPhysicalMaterial,
+  Vector3,
 } from "three";
 import {
   BREAK_THRESHOLD,
@@ -19,26 +25,25 @@ import {
   WAX_CHIP_IMPULSE,
   WAX_CHIP_MASS,
   WAX_CHIP_SCALE,
+  WAX_CHIP_SPAWN_OFFSET,
+  WAX_CHIP_COLLISION_DELAY_FRAMES,
 } from "../constants/crush";
 import {
   collectWaxSlices,
+  isWaxMesh,
   sliceRestTopY,
+  splitWaxFromApple,
 } from "../utils/waxContact";
 
 const APPLE_POSITION = [0, 2, 0];
 const APPLE_SCALE = 2;
-
-// Half the metal plate's thickness; its collider bottom sits this far
-// below the plane's center Y (see MetalPlane's CuboidCollider args).
 const PLANE_HALF_THICKNESS = 0.125;
 
-// Rapier interaction groups. A freshly detached chip's hull overlaps the
-// intact apple's hull (the chip hugs the apple's surface), and letting
-// those two colliders touch would eject the chip violently. So the apple
-// and the chips live in their own groups and both only collide with the
-// "everything else" group 0 (floor, plate, broken apple pieces).
-const APPLE_GROUPS = interactionGroups(2, [0]);
-const CHIP_GROUPS = interactionGroups(1, [0]);
+
+const APPLE_GROUPS = interactionGroups(2, [0, 1]);
+const CHIP_GROUPS = interactionGroups(1, [0, 2]);
+
+
 
 // Translucent wax coat. Crack lines are not drawn — pieces just snap off.
 function makeWaxMaterial(source) {
@@ -74,12 +79,7 @@ function configureAppleMaterials(root) {
   root.traverse((child) => {
     if (!child.isMesh) return;
 
-    const materialName = child.material?.name ?? "";
-    const isWax =
-      child.name.startsWith(WAX_SLICE_PREFIX) ||
-      materialName === "AppleWaxMat";
-
-    if (isWax) {
+    if (isWaxMesh(child, WAX_SLICE_PREFIX)) {
       child.material = makeWaxMaterial(child.material);
       // Draw wax after the opaque apple body so you see through to the fruit.
       child.renderOrder = 2;
@@ -97,25 +97,60 @@ export default function Apple({ planeYRef }) {
   const [phase, setPhase] = useState("intact");
   const phaseRef = useRef("intact");
   const visualRef = useRef(null);
+  const appleBodyRef = useRef(null);
+  const colliderRef = useRef(null);
 
-  // Wax chips that have snapped off and now live as free physics bodies.
-  // They persist across the apple's own break (nice debris).
   const [chips, setChips] = useState([]);
+  const chipsRef = useRef(chips);
+  chipsRef.current = chips;
+  const chipAgeRef = useRef(new Map());
 
-  const wholeApple = useMemo(() => {
+  // Split the GLB into: fruit (collides), stem/leaf (looks only), wax (looks
+  // only until chips snap off).
+  const { fruitBody, stemAndLeaf, waxGroup } = useMemo(() => {
     const clone = whole.scene.clone(true);
-
-    // this function applies texture to apple.
-    // the wax is not replaced; the texture is applied.
     configureAppleMaterials(clone);
-    return clone;
+    const { bodyRoot, waxGroup } = splitWaxFromApple(clone, WAX_SLICE_PREFIX);
+
+    const stemAndLeaf = new Group();
+    stemAndLeaf.name = "AppleDecor";
+
+    const toMove = [];
+    bodyRoot.traverse((child) => {
+      if (
+        child.isMesh &&
+        (child.name === "AppleLeaf" || child.name === "AppleStem")
+      ) {
+        toMove.push(child);
+      }
+    });
+
+    bodyRoot.add(stemAndLeaf);
+    for (const mesh of toMove) stemAndLeaf.attach(mesh);
+    bodyRoot.remove(stemAndLeaf);
+
+    return { fruitBody: bodyRoot, stemAndLeaf, waxGroup };
   }, [whole.scene]);
 
-  // One record per wax chip mesh (sorted top-to-bottom): rest-space Y
-  // bounds and outward pop direction.
+  // Model-space box of the fruit only — used to resize the CuboidCollider
+  // each frame so physics tracks the squashed visual (MeshCollider cannot).
+  const fruitShape = useMemo(() => {
+    const box = new Box3().setFromObject(fruitBody);
+    const size = box.getSize(new Vector3());
+    const center = box.getCenter(new Vector3());
+    return {
+      halfX: size.x / 2,
+      halfY: size.y / 2,
+      halfZ: size.z / 2,
+      centerX: center.x,
+      centerY: center.y,
+      centerZ: center.z,
+    };
+  }, [fruitBody]);
+
   const waxSlices = useMemo(
-    () => collectWaxSlices(wholeApple, WAX_SLICE_PREFIX),
-    [wholeApple]
+    () => collectWaxSlices(waxGroup, WAX_SLICE_PREFIX),
+    [waxGroup]
   );
 
   const bounds = useMemo(() => {
@@ -123,10 +158,31 @@ export default function Apple({ planeYRef }) {
     return { minY: box.min.y, maxY: box.max.y, height: box.max.y - box.min.y };
   }, [whole.scene]);
 
-  // Each root child of broken_apple2.glb is one fragment (a Group holding the
-  // fragment's meshes, since each fragment uses two materials), offset from
-  // the apple's center. Bake that offset into a world position for its
-  // RigidBody (Rapier bodies should not live inside scaled/offset groups).
+  // Approximate fruit with a sphere. Radius blends the three scaled half-axes
+  // so it shrinks as the apple flattens and grows a bit as it bulges on XZ.
+  function appleRadius(squashY, bulgeXZ) {
+    return (
+      ((fruitShape.halfX * bulgeXZ +
+        fruitShape.halfY * squashY +
+        fruitShape.halfZ * bulgeXZ) /
+        3) *
+      APPLE_SCALE
+    );
+  }
+
+  // Collider lives on the RigidBody (not inside visualRef), so we set radius
+  // and local translation ourselves every frame.
+  function syncAppleCollider(squashY, bulgeXZ, groupY) {
+    const col = colliderRef.current;
+    if (!col) return;
+    col.setRadius(appleRadius(squashY, bulgeXZ));
+    col.setTranslationWrtParent({
+      x: fruitShape.centerX * APPLE_SCALE * bulgeXZ,
+      y: groupY + fruitShape.centerY * APPLE_SCALE * squashY,
+      z: fruitShape.centerZ * APPLE_SCALE * bulgeXZ,
+    });
+  }
+
   const pieces = useMemo(() => {
     return broken.scene.children.map((fragment) => {
       const clone = fragment.clone(true);
@@ -152,6 +208,27 @@ export default function Apple({ planeYRef }) {
   }
 
   useFrame(() => {
+    // Enable apple collision on chips after the spawn delay — runs even
+    // after the apple has shattered so late chips still get group updates.
+    const ages = chipAgeRef.current;
+    const readyIds = [];
+    for (const chip of chipsRef.current) {
+      if (chip.appleCollision) continue;
+      const age = (ages.get(chip.id) ?? 0) + 1;
+      ages.set(chip.id, age);
+      if (age >= WAX_CHIP_COLLISION_DELAY_FRAMES) {
+        readyIds.push(chip.id);
+      }
+    }
+    if (readyIds.length > 0) {
+      const readySet = new Set(readyIds);
+      setChips((prev) =>
+        prev.map((chip) =>
+          readySet.has(chip.id) ? { ...chip, appleCollision: true } : chip
+        )
+      );
+    }
+
     if (phaseRef.current === "broken" || !visualRef.current) return;
 
     // How far the plate's bottom has pushed down past the apple's top,
@@ -182,7 +259,8 @@ export default function Apple({ planeYRef }) {
       // Chips that already snapped off stay off (wax doesn't heal).
       changePhase("intact");
       visualRef.current.scale.setScalar(APPLE_SCALE);
-      visualRef.current.position.set(...APPLE_POSITION);
+      visualRef.current.position.set(0, 0, 0);
+      syncAppleCollider(1, 1, 0);
       return;
     }
 
@@ -199,12 +277,10 @@ export default function Apple({ planeYRef }) {
       APPLE_SCALE * bulgeXZ
     );
 
-    // Shift the group down so the apple's bottom stays planted on the
-    // floor while its height shrinks (otherwise it squashes around its
-    // center and appears to float).
-    const groupY =
-      APPLE_POSITION[1] + bounds.minY * APPLE_SCALE * (1 - squashY);
-    visualRef.current.position.set(APPLE_POSITION[0], groupY, APPLE_POSITION[2]);
+    // Local Y only — RigidBody already sits at APPLE_POSITION.
+    const groupY = bounds.minY * APPLE_SCALE * (1 - squashY);
+    visualRef.current.position.set(0, groupY, 0);
+    syncAppleCollider(squashY, bulgeXZ, groupY);
 
     // Wax break: a chip snaps off once the plate has crushed past the
     // chip's REST-position top. (The squashed mesh always stays below the
@@ -223,16 +299,24 @@ export default function Apple({ planeYRef }) {
         // Use full (un-squashed) scale so the chip keeps its baked shell
         // thickness — inheriting squashY made shards look paper-flat.
         const chipScale = APPLE_SCALE * WAX_CHIP_SCALE;
+        chipAgeRef.current.set(slice.id, 0);
         detachedNow.push({
           id: slice.id,
           object: slice.object,
-          position: [APPLE_POSITION[0], groupY, APPLE_POSITION[2]],
+          // Nudge outward so the hull starts clear of the apple body.
+          // Chip RigidBodies use world space; add APPLE_POSITION back on Y.
+          position: [
+            APPLE_POSITION[0] + slice.outward.x * WAX_CHIP_SPAWN_OFFSET,
+            APPLE_POSITION[1] + groupY,
+            APPLE_POSITION[2] + slice.outward.z * WAX_CHIP_SPAWN_OFFSET,
+          ],
           scale: [chipScale, chipScale, chipScale],
           velocity: [
             slice.outward.x * WAX_CHIP_IMPULSE,
             0.35,
             slice.outward.z * WAX_CHIP_IMPULSE,
           ],
+          appleCollision: false,
         });
       }
     }
@@ -285,18 +369,30 @@ export default function Apple({ planeYRef }) {
     <>
       {chipBodies}
       <RigidBody
+        position={APPLE_POSITION}
+        ref={appleBodyRef}
         type="fixed"
-        colliders="hull"
+        colliders={false}
         collisionGroups={APPLE_GROUPS}
-        // The metal plane is kinematic and this body is fixed; Rapier skips
-        // kinematic-vs-fixed contacts unless we opt in explicitly.
         activeCollisionTypes={
           ActiveCollisionTypes.DEFAULT | ActiveCollisionTypes.KINEMATIC_FIXED
         }
         onCollisionEnter={handleCollisionEnter}
       >
-        <group ref={visualRef} position={APPLE_POSITION} scale={APPLE_SCALE}>
-          <primitive object={wholeApple} />
+        {/* Approximate fruit sphere — radius updated in useFrame with squash. */}
+        <BallCollider
+          ref={colliderRef}
+          args={[appleRadius(1, 1)]}
+          position={[
+            fruitShape.centerX * APPLE_SCALE,
+            fruitShape.centerY * APPLE_SCALE,
+            fruitShape.centerZ * APPLE_SCALE,
+          ]}
+        />
+        <group ref={visualRef} scale={APPLE_SCALE}>
+          <primitive object={fruitBody} />
+          <primitive object={stemAndLeaf} />
+          <primitive object={waxGroup} />
         </group>
       </RigidBody>
     </>

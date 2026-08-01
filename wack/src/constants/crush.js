@@ -24,8 +24,6 @@ export const WAX_CONTACT_EPS = 0.02;
 
 // Outward speed (m/s) given to a chip the moment it snaps off.
 // Keep this modest so heavier chips don't fly like paper.
-
-
 export const WAX_CHIP_IMPULSE = 0.1;
 
 // Debris-scale mass so chips settle on broken pieces instead of tunneling
@@ -34,4 +32,12 @@ export const WAX_CHIP_MASS = 2;
 
 // Extra uniform scale applied when a chip snaps off. The mesh already has
 // Solidify thickness; this just reads a bit chunkier in flight.
-export const WAX_CHIP_SCALE = 1 ;
+export const WAX_CHIP_SCALE = 1;
+
+// World-space nudge along the chip's outward direction at spawn so the
+// convex hull starts slightly clear of the apple body (avoids a pop).
+export const WAX_CHIP_SPAWN_OFFSET = 0.04;
+
+// Frames before a new chip is allowed to collide with the apple body.
+// During this window it still hits the floor/plate (group 0).
+export const WAX_CHIP_COLLISION_DELAY_FRAMES = 3;

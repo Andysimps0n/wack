@@ -21,7 +21,7 @@ export default function Wack({ scrollProgress }) {
       >
         <CameraSetup />
 
-        <Physics gravity={[0, -13, 0]}>
+        <Physics gravity={[0, -13, 0]} debug={false}>
           <MetalPlane progress={scrollProgress} planeYRef={planeYRef} />
           <Apple planeYRef={planeYRef} />
           <CubeBackground size={20} />
