@@ -1,13 +1,16 @@
-// Tunables for the scroll-driven apple crush.
+// Tunables for the apple crush (smash-button driven).
 
-// How far scrollProgress (0–1) must go before the apple reaches full
-// squash. Past this, squash stays at the max until the user scrolls back
-// up (no permanent lock — resilience always follows scroll).
+// Crush audio — progress is driven from the playhead while smashing.
+export const CRUSH_SOUND_URL = "/crush.mp3";
+// Fallback if metadata has not loaded yet (~actual file length).
+export const CRUSH_SOUND_DURATION_SEC = 1.54;
+export const CRUSH_VOLUME = 1;
+
+// How far crushProgress (0–1) must go before the apple reaches full squash.
 export const BREAK_THRESHOLD = 0.525;
 
-// Y scale of the apple at full squash. Keeping this equal to
-// 1 - BREAK_THRESHOLD means at that scroll amount the squash matches the
-// scroll-driven compression (no leftover "uncrushed" height).
+// Y scale of the apple at full squash. Equal to 1 - BREAK_THRESHOLD so the
+// visual squash matches the crush-line compression at that progress.
 export const MIN_SQUASH_Y = 1 - BREAK_THRESHOLD;
 
 // How much the apple bulges outward on X/Z at full squeeze.

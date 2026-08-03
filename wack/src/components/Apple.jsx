@@ -87,16 +87,16 @@ function configureAppleMaterials(root) {
   });
 }
 
-export default function Apple({ scrollProgress }) {
+export default function Apple({ crushProgress }) {
   const whole = useGLTF("/models/apple_c1.glb");
 
   // Phase is read every frame via ref; React state is not needed for render.
   const phaseRef = useRef("intact");
   const visualRef = useRef(null);
   const colliderRef = useRef(null);
-  // Latest scroll value — props can change without re-running useFrame setup.
-  const scrollProgressRef = useRef(scrollProgress);
-  scrollProgressRef.current = scrollProgress;
+  // Latest smash progress — props can change without re-running useFrame setup.
+  const crushProgressRef = useRef(crushProgress);
+  crushProgressRef.current = crushProgress;
 
   const [chips, setChips] = useState([]);
   const chipsRef = useRef(chips);
@@ -212,7 +212,7 @@ export default function Apple({ scrollProgress }) {
     // down through the apple's height (no physical plane).
     const appleTop = APPLE_POSITION[1] + bounds.maxY * APPLE_SCALE;
     const appleHeight = bounds.height * APPLE_SCALE;
-    const compression = MathUtils.clamp(scrollProgressRef.current, 0, 1);
+    const compression = MathUtils.clamp(crushProgressRef.current, 0, 1);
     const crushBottom = appleTop - compression * appleHeight;
 
     if (phaseRef.current === "intact") {

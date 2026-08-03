@@ -5,7 +5,7 @@ import CubeBackground from "./CubeBackground";
 import Apple from "./Apple";
 import CameraSetup from "./CameraSetup";
 
-export default function Wack({ scrollProgress }) {
+export default function Wack({ crushProgress }) {
   return (
     <div className="wack-wrapper">
       <Canvas
@@ -15,7 +15,7 @@ export default function Wack({ scrollProgress }) {
         <CameraSetup />
 
         <Physics gravity={[0, -13, 0]} debug={false}>
-          <Apple scrollProgress={scrollProgress / 0.7} />
+          <Apple crushProgress={crushProgress} />
           <CubeBackground size={20} />
         </Physics>
 
