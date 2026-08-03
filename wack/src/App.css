@@ -7,6 +7,11 @@ body {
   height: 300vh;
 }
 
+/* Butter has no scroll story yet — just fill one screen. */
+.butter-container {
+  height: 100vh;
+}
+
 /* Keeps the canvas pinned to the viewport while the page scrolls. */
 .sticky-canvas {
   position: sticky;
@@ -17,4 +22,39 @@ body {
 .wack-wrapper {
   width: 100vw;
   height: 100vh;
+}
+
+/* Frosted-glass theme buttons, top-left over the 3D canvas. */
+.theme-switcher {
+  position: fixed;
+  top: 1.25rem;
+  left: 1.25rem;
+  z-index: 10;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.theme-btn {
+  padding: 0.55rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(255, 255, 255, 0.92);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.theme-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.theme-btn--active {
+  background: rgba(255, 255, 255, 0.32);
+  border-color: rgba(255, 255, 255, 0.55);
 }

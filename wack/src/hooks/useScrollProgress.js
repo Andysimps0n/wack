@@ -13,7 +13,7 @@ export default function useScrollProgress() {
     }
 
     // Prevent the browser from restoring scroll position on refresh, and
-    // start at the top so the metal plane re-inits at START_Y.
+    // start at the top so the crush begins uncompressed.
     if ("scrollRestoration" in history) {
       history.scrollRestoration = "manual";
     }

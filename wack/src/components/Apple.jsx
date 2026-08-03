@@ -6,7 +6,6 @@ import {
   BallCollider,
   interactionGroups,
 } from "@react-three/rapier";
-import { ActiveCollisionTypes } from "@dimforge/rapier3d-compat";
 import {
   Box3,
   DoubleSide,
@@ -37,8 +36,6 @@ import {
 
 const APPLE_POSITION = [0, 2, 0];
 const APPLE_SCALE = 2;
-const PLANE_HALF_THICKNESS = 0.125;
-
 
 const APPLE_GROUPS = interactionGroups(2, [0, 1]);
 const CHIP_GROUPS = interactionGroups(1, [0, 2]);
@@ -90,15 +87,16 @@ function configureAppleMaterials(root) {
   });
 }
 
-export default function Apple({ planeYRef }) {
+export default function Apple({ scrollProgress }) {
   const whole = useGLTF("/models/apple_c1.glb");
-  const broken = useGLTF("/models/broken_apple15.glb");
 
-  const [phase, setPhase] = useState("intact");
+  // Phase is read every frame via ref; React state is not needed for render.
   const phaseRef = useRef("intact");
   const visualRef = useRef(null);
-  const appleBodyRef = useRef(null);
   const colliderRef = useRef(null);
+  // Latest scroll value — props can change without re-running useFrame setup.
+  const scrollProgressRef = useRef(scrollProgress);
+  scrollProgressRef.current = scrollProgress;
 
   const [chips, setChips] = useState([]);
   const chipsRef = useRef(chips);
@@ -183,33 +181,12 @@ export default function Apple({ planeYRef }) {
     });
   }
 
-  const pieces = useMemo(() => {
-    return broken.scene.children.map((fragment) => {
-      const clone = fragment.clone(true);
-      const worldPosition = [
-        APPLE_POSITION[0] + fragment.position.x * APPLE_SCALE,
-        APPLE_POSITION[1] + fragment.position.y * APPLE_SCALE,
-        APPLE_POSITION[2] + fragment.position.z * APPLE_SCALE,
-      ];
-      clone.position.set(0, 0, 0);
-      return { name: fragment.name, object: clone, position: worldPosition };
-    });
-  }, [broken.scene]);
-
   function changePhase(next) {
     phaseRef.current = next;
-    setPhase(next);
-  }
-
-  function handleCollisionEnter({ other }) {
-    if (phaseRef.current !== "intact") return;
-    if (other.rigidBodyObject?.name !== "metal-plane") return;
-    changePhase("squeezing");
   }
 
   useFrame(() => {
-    // Enable apple collision on chips after the spawn delay — runs even
-    // after the apple has shattered so late chips still get group updates.
+    // Enable apple collision on chips after the spawn delay.
     const ages = chipAgeRef.current;
     const readyIds = [];
     for (const chip of chipsRef.current) {
@@ -229,18 +206,14 @@ export default function Apple({ planeYRef }) {
       );
     }
 
-    if (phaseRef.current === "broken" || !visualRef.current) return;
+    if (!visualRef.current) return;
 
-    // How far the plate's bottom has pushed down past the apple's top,
-    // as a fraction of the apple's full height.
+    // Scroll 0–1 maps directly to how far a virtual crush line has moved
+    // down through the apple's height (no physical plane).
     const appleTop = APPLE_POSITION[1] + bounds.maxY * APPLE_SCALE;
     const appleHeight = bounds.height * APPLE_SCALE;
-    const planeBottom = planeYRef.current - PLANE_HALF_THICKNESS;
-    const compression = MathUtils.clamp(
-      (appleTop - planeBottom) / appleHeight,
-      0,
-      1
-    );
+    const compression = MathUtils.clamp(scrollProgressRef.current, 0, 1);
+    const crushBottom = appleTop - compression * appleHeight;
 
     if (phaseRef.current === "intact") {
       if (compression > 0) changePhase("squeezing");
@@ -248,14 +221,8 @@ export default function Apple({ planeYRef }) {
     }
 
     // phase === 'squeezing'
-    if (compression >= BREAK_THRESHOLD) {
-      // Apple shatters; already-detached wax chips stay as debris and any
-      // wax still attached vanishes along with the intact visual.
-      changePhase("broken");
-      return;
-    }
     if (compression <= 0) {
-      // Plate lifted off before the threshold: spring back to normal.
+      // Scroll returned to the top: spring back to full shape.
       // Chips that already snapped off stay off (wax doesn't heal).
       changePhase("intact");
       visualRef.current.scale.setScalar(APPLE_SCALE);
@@ -266,9 +233,8 @@ export default function Apple({ planeYRef }) {
 
     // Squash: flatten on Y, bulge outward on X/Z as compression grows.
     // Normalize by the threshold so the full squash range plays out during
-    // the squeeze; with MIN_SQUASH_Y = 1 - BREAK_THRESHOLD the apple's top
-    // exactly tracks the plate's bottom (no clipping through the plate).
-    const squeezeAmount = compression / BREAK_THRESHOLD;
+    // the squeeze (MIN_SQUASH_Y = 1 - BREAK_THRESHOLD).
+    const squeezeAmount = Math.min(compression / BREAK_THRESHOLD, 1);
     const squashY = MathUtils.lerp(1, MIN_SQUASH_Y, squeezeAmount);
     const bulgeXZ = MathUtils.lerp(1, MAX_BULGE_XZ, squeezeAmount);
     visualRef.current.scale.set(
@@ -282,17 +248,16 @@ export default function Apple({ planeYRef }) {
     visualRef.current.position.set(0, groupY, 0);
     syncAppleCollider(squashY, bulgeXZ, groupY);
 
-    // Wax break: a chip snaps off once the plate has crushed past the
-    // chip's REST-position top. (The squashed mesh always stays below the
-    // plate because the apple's top tracks it, so we compare against where
-    // the wax originally was — brittle wax breaks instead of compressing.)
+    // Wax break: a chip snaps off once the virtual crush line passes the
+    // chip's REST-position top. (We compare against where the wax originally
+    // was — brittle wax breaks instead of compressing.)
     const detachedNow = [];
     for (const slice of waxSlices) {
       if (slice.detached) continue;
 
       const restTopY = sliceRestTopY(slice, APPLE_POSITION[1], APPLE_SCALE);
 
-      if (planeBottom - restTopY <= WAX_CONTACT_EPS) {
+      if (crushBottom - restTopY <= WAX_CONTACT_EPS) {
         slice.detached = true;
         slice.object.removeFromParent();
         prepareDetachedWax(slice.object);
@@ -344,40 +309,14 @@ export default function Apple({ planeYRef }) {
     </RigidBody>
   ));
 
-  if (phase === "broken") {
-    return (
-      <>
-        {chipBodies}
-        {pieces.map((piece) => (
-          <RigidBody
-            key={piece.name}
-            type="dynamic"
-            colliders="hull"
-            position={piece.position}
-            restitution={0.1}
-            friction={2}
-            ccd
-          >
-            <primitive object={piece.object} scale={APPLE_SCALE} />
-          </RigidBody>
-        ))}
-      </>
-    );
-  }
-
   return (
     <>
       {chipBodies}
       <RigidBody
         position={APPLE_POSITION}
-        ref={appleBodyRef}
         type="fixed"
         colliders={false}
         collisionGroups={APPLE_GROUPS}
-        activeCollisionTypes={
-          ActiveCollisionTypes.DEFAULT | ActiveCollisionTypes.KINEMATIC_FIXED
-        }
-        onCollisionEnter={handleCollisionEnter}
       >
         {/* Approximate fruit sphere — radius updated in useFrame with squash. */}
         <BallCollider
@@ -400,4 +339,3 @@ export default function Apple({ planeYRef }) {
 }
 
 useGLTF.preload("/models/apple_c1.glb");
-useGLTF.preload("/models/broken_apple15.glb");

@@ -1,6 +1,6 @@
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
 
-export default function CubeBackground({ size }) {
+export default function CubeBackground({ size, color = "#d9f47e" }) {
   const half = size / 2;
 
   return (
@@ -8,7 +8,7 @@ export default function CubeBackground({ size }) {
       {/* Floor */}
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[size, size]} />
-        <meshStandardMaterial color="#d9f47e" />
+        <meshStandardMaterial color={color} />
       </mesh>
 
       {/* Invisible physics floor so apple pieces land on the visual floor
@@ -20,13 +20,13 @@ export default function CubeBackground({ size }) {
       {/* Left Wall */}
       <mesh rotation={[0, Math.PI / 2, 0]} position={[-half, half, 0]}>
         <planeGeometry args={[size, size]} />
-        <meshStandardMaterial color="#d9f47e" />
+        <meshStandardMaterial color={color} />
       </mesh>
 
       {/* Back Wall */}
       <mesh rotation={[0, 0, 0]} position={[0, half, -half]}>
         <planeGeometry args={[size, size]} />
-        <meshStandardMaterial color="#d9f47e" />
+        <meshStandardMaterial color={color} />
       </mesh>
     </>
   );

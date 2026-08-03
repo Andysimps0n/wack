@@ -2,10 +2,9 @@ import { Canvas } from "@react-three/fiber";
 import { Physics } from "@react-three/rapier";
 import SpotLight from "./SpotLight";
 import CubeBackground from "./CubeBackground";
-import Apple from "./Apple";
 import CameraSetup from "./CameraSetup";
 
-export default function Wack({ scrollProgress }) {
+export default function Butter() {
   return (
     <div className="wack-wrapper">
       <Canvas
@@ -14,9 +13,8 @@ export default function Wack({ scrollProgress }) {
       >
         <CameraSetup />
 
-        <Physics gravity={[0, -13, 0]} debug={false}>
-          <Apple scrollProgress={scrollProgress / 0.7} />
-          <CubeBackground size={20} />
+        <Physics gravity={[0, -13, 0]}>
+          <CubeBackground size={20} color="#f5d76e" />
         </Physics>
 
         <directionalLight position={[5, 5, 5]} intensity={0.5} />

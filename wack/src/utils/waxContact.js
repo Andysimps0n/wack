@@ -64,7 +64,7 @@ export function collectWaxSlices(root, prefix) {
 
 // Where the chip's top sits in world space when the apple is NOT squashed.
 // Wax is brittle: it visually squashes with the apple underneath it, but it
-// breaks once the plate crushes past its original (rest) height.
+// breaks once the virtual crush line passes its original (rest) height.
 export function sliceRestTopY(slice, appleBaseY, appleScale) {
   return appleBaseY + slice.localMaxY * appleScale;
 }
