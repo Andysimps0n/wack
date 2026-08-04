@@ -53,7 +53,7 @@ export const WAX_CHIP_COLLISION_DELAY_FRAMES = 3;
 // --- Post-smash cleanup (whoosh → clear → drop a fresh apple) ---
 
 // Pause on the crushed apple before blowing debris away.
-export const CLEANUP_HOLD_SEC = 1;
+export const CLEANUP_HOLD_SEC = 0.1;
 
 // Upward speed (m/s) applied to apple + chips when the whoosh starts.
 export const WHOOSH_SPEED_Y = 22;
