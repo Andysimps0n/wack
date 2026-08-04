@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import {
@@ -26,6 +26,13 @@ import {
   WAX_CHIP_SCALE,
   WAX_CHIP_SPAWN_OFFSET,
   WAX_CHIP_COLLISION_DELAY_FRAMES,
+  CLEANUP_HOLD_SEC,
+  WHOOSH_SPEED_Y,
+  WHOOSH_SCATTER_XZ,
+  WHOOSH_CLEAR_Y,
+  WHOOSH_CLEAR_TIMEOUT_SEC,
+  RESPAWN_HEIGHT_OFFSET,
+  RESPAWN_DROP_SEC,
 } from "../constants/crush";
 import {
   collectWaxSlices,
@@ -39,8 +46,12 @@ const APPLE_SCALE = 2;
 
 const APPLE_GROUPS = interactionGroups(2, [0, 1]);
 const CHIP_GROUPS = interactionGroups(1, [0, 2]);
+// During the whoosh, collide with nothing so debris flies out cleanly.
+const FREE_GROUPS = interactionGroups(2, []);
 
-
+function randomScatter() {
+  return (Math.random() * 2 - 1) * WHOOSH_SCATTER_XZ;
+}
 
 // Translucent wax coat. Crack lines are not drawn — pieces just snap off.
 function makeWaxMaterial(source) {
@@ -87,21 +98,38 @@ function configureAppleMaterials(root) {
   });
 }
 
-export default function Apple({ crushProgress }) {
+export default function Apple({
+  crushProgress,
+  status,
+  onStartBlow,
+  onCleared,
+  onSettled,
+}) {
   const whole = useGLTF("/models/apple_c1.glb");
+  const isDropping = status === "dropping";
 
   // Phase is read every frame via ref; React state is not needed for render.
-  const phaseRef = useRef("intact");
+  const phaseRef = useRef(isDropping ? "dropping" : "intact");
   const visualRef = useRef(null);
   const colliderRef = useRef(null);
+  const appleBodyRef = useRef(null);
+  const chipBodyRefs = useRef(new Map());
   // Latest smash progress — props can change without re-running useFrame setup.
   const crushProgressRef = useRef(crushProgress);
   crushProgressRef.current = crushProgress;
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const [chips, setChips] = useState([]);
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   const chipAgeRef = useRef(new Map());
+
+  const whooshAppliedRef = useRef(false);
+  const clearedRef = useRef(false);
+  const settledRef = useRef(false);
+  const blowStartedAtRef = useRef(0);
+  const dropElapsedRef = useRef(0);
 
   // Split the GLB into: fruit (collides), stem/leaf (looks only), wax (looks
   // only until chips snap off).
@@ -185,7 +213,62 @@ export default function Apple({ crushProgress }) {
     phaseRef.current = next;
   }
 
-  useFrame(() => {
+  function applyWhoosh() {
+    const apple = appleBodyRef.current;
+    if (apple) {
+      apple.setLinvel(
+        { x: randomScatter(), y: WHOOSH_SPEED_Y, z: randomScatter() },
+        true
+      );
+    }
+
+    for (const chip of chipsRef.current) {
+      const body = chipBodyRefs.current.get(chip.id);
+      if (!body) continue;
+      body.setLinvel(
+        { x: randomScatter(), y: WHOOSH_SPEED_Y, z: randomScatter() },
+        true
+      );
+    }
+  }
+
+  function debrisAllClear() {
+    const apple = appleBodyRef.current;
+    // Still mounting / already gone — not clear yet while we're blowing.
+    if (!apple || apple.translation().y < WHOOSH_CLEAR_Y) return false;
+
+    for (const chip of chipsRef.current) {
+      const body = chipBodyRefs.current.get(chip.id);
+      if (!body || body.translation().y < WHOOSH_CLEAR_Y) return false;
+    }
+    return true;
+  }
+
+  // After smash finishes, wait then ask the hook to enter "blowing".
+  useEffect(() => {
+    if (status !== "done") return;
+    const timer = setTimeout(() => {
+      onStartBlow();
+    }, CLEANUP_HOLD_SEC * 1000);
+    return () => clearTimeout(timer);
+  }, [status, onStartBlow]);
+
+  // Fresh mount during the drop cycle starts high above the rest pose.
+  useEffect(() => {
+    if (!isDropping) return;
+    dropElapsedRef.current = 0;
+    settledRef.current = false;
+    const body = appleBodyRef.current;
+    if (body) {
+      body.setNextKinematicTranslation({
+        x: APPLE_POSITION[0],
+        y: APPLE_POSITION[1] + RESPAWN_HEIGHT_OFFSET,
+        z: APPLE_POSITION[2],
+      });
+    }
+  }, [isDropping]);
+
+  useFrame((_, delta) => {
     // Enable apple collision on chips after the spawn delay.
     const ages = chipAgeRef.current;
     const readyIds = [];
@@ -204,6 +287,74 @@ export default function Apple({ crushProgress }) {
           readySet.has(chip.id) ? { ...chip, appleCollision: true } : chip
         )
       );
+    }
+
+    // --- Cleanup: blow debris up, then clear ---
+    if (statusRef.current === "blowing") {
+      // Re-apply for a few frames in case the body is still "fixed" on the
+      // first frame after status flips to "blowing".
+      if (!whooshAppliedRef.current) {
+        if (blowStartedAtRef.current === 0) {
+          blowStartedAtRef.current = performance.now();
+        }
+        applyWhoosh();
+        const apple = appleBodyRef.current;
+        if (apple && apple.linvel().y > WHOOSH_SPEED_Y * 0.5) {
+          whooshAppliedRef.current = true;
+        }
+      }
+
+      const timedOut =
+        blowStartedAtRef.current > 0 &&
+        (performance.now() - blowStartedAtRef.current) / 1000 >=
+          WHOOSH_CLEAR_TIMEOUT_SEC;
+
+      if (!clearedRef.current && (debrisAllClear() || timedOut)) {
+        clearedRef.current = true;
+        onCleared();
+      }
+      return;
+    }
+
+    // --- Respawn: scripted drop from the sky to the rest position ---
+    if (statusRef.current === "dropping") {
+      const body = appleBodyRef.current;
+      if (!body || settledRef.current) return;
+
+      dropElapsedRef.current += delta;
+      const t = MathUtils.clamp(
+        dropElapsedRef.current / RESPAWN_DROP_SEC,
+        0,
+        1
+      );
+      // Ease-out so it slows as it settles into place.
+      const eased = 1 - (1 - t) * (1 - t);
+      const startY = APPLE_POSITION[1] + RESPAWN_HEIGHT_OFFSET;
+      const y = MathUtils.lerp(startY, APPLE_POSITION[1], eased);
+
+      body.setNextKinematicTranslation({
+        x: APPLE_POSITION[0],
+        y,
+        z: APPLE_POSITION[2],
+      });
+
+      if (t >= 1) {
+        settledRef.current = true;
+        body.setNextKinematicTranslation({
+          x: APPLE_POSITION[0],
+          y: APPLE_POSITION[1],
+          z: APPLE_POSITION[2],
+        });
+        // Next smash needs the normal intact → squeezing path.
+        changePhase("intact");
+        if (visualRef.current) {
+          visualRef.current.scale.setScalar(APPLE_SCALE);
+          visualRef.current.position.set(0, 0, 0);
+        }
+        syncAppleCollider(1, 1, 0);
+        onSettled();
+      }
+      return;
     }
 
     if (!visualRef.current) return;
@@ -290,16 +441,32 @@ export default function Apple({ crushProgress }) {
     }
   });
 
+  const isBlowing = status === "blowing";
+  const appleBodyType = isBlowing
+    ? "dynamic"
+    : isDropping
+      ? "kinematicPosition"
+      : "fixed";
+  const appleGroups = isBlowing ? FREE_GROUPS : APPLE_GROUPS;
+  const appleStartY = isDropping
+    ? APPLE_POSITION[1] + RESPAWN_HEIGHT_OFFSET
+    : APPLE_POSITION[1];
+
   const chipBodies = chips.map((chip) => (
     <RigidBody
       key={chip.id}
+      ref={(body) => {
+        if (body) chipBodyRefs.current.set(chip.id, body);
+        else chipBodyRefs.current.delete(chip.id);
+      }}
       type="dynamic"
       colliders="hull"
       position={chip.position}
       linearVelocity={chip.velocity}
-      collisionGroups={CHIP_GROUPS}
+      collisionGroups={isBlowing ? FREE_GROUPS : CHIP_GROUPS}
+      gravityScale={isBlowing ? 0 : 1}
       mass={WAX_CHIP_MASS}
-      linearDamping={0.4}
+      linearDamping={isBlowing ? 0 : 0.4}
       angularDamping={0.55}
       restitution={0.02}
       friction={1.4}
@@ -313,10 +480,14 @@ export default function Apple({ crushProgress }) {
     <>
       {chipBodies}
       <RigidBody
-        position={APPLE_POSITION}
-        type="fixed"
+        ref={appleBodyRef}
+        position={[APPLE_POSITION[0], appleStartY, APPLE_POSITION[2]]}
+        type={appleBodyType}
         colliders={false}
-        collisionGroups={APPLE_GROUPS}
+        collisionGroups={appleGroups}
+        gravityScale={isBlowing ? 0 : 1}
+        linearDamping={isBlowing ? 0 : 0}
+        ccd={isBlowing}
       >
         {/* Approximate fruit sphere — radius updated in useFrame with squash. */}
         <BallCollider

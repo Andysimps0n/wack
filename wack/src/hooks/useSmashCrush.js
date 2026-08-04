@@ -3,6 +3,8 @@ import {
   CRUSH_SOUND_DURATION_SEC,
   CRUSH_SOUND_URL,
   CRUSH_VOLUME,
+  WHOOSH_SOUND_URL,
+  WHOOSH_VOLUME,
 } from "../constants/crush";
 
 function audioDuration(audio) {
@@ -13,11 +15,14 @@ function audioDuration(audio) {
 }
 
 // Owns crush audio + playhead-synced progress for the Smash button.
-// States: idle → smashing → done (stays crushed until reload).
+// Cycle: idle → smashing → done → blowing → dropping → idle
 export default function useSmashCrush() {
   const [status, setStatus] = useState("idle");
   const [crushProgress, setCrushProgress] = useState(0);
+  // Bump this to remount Apple after debris is cleared (fresh wax + squash).
+  const [appleKey, setAppleKey] = useState(0);
   const audioRef = useRef(null);
+  const whooshAudioRef = useRef(null);
   const rafRef = useRef(0);
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -28,10 +33,17 @@ export default function useSmashCrush() {
     audio.volume = CRUSH_VOLUME;
     audioRef.current = audio;
 
+    const whoosh = new Audio(WHOOSH_SOUND_URL);
+    whoosh.preload = "auto";
+    whoosh.volume = WHOOSH_VOLUME;
+    whooshAudioRef.current = whoosh;
+
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       audio.pause();
       audioRef.current = null;
+      whoosh.pause();
+      whooshAudioRef.current = null;
     };
   }, []);
 
@@ -89,5 +101,44 @@ export default function useSmashCrush() {
     }
   }, [tick]);
 
-  return { crushProgress, status, smash };
+  // Called by Apple after the 1s hold on the crushed apple.
+  const startBlow = useCallback(() => {
+    if (statusRef.current !== "done") return;
+    setStatus("blowing");
+    statusRef.current = "blowing";
+
+    // Play whoosh with the blow — same user-gesture chain as smash, so browsers
+    // usually allow it. Fail quietly if the file is missing / blocked.
+    const whoosh = whooshAudioRef.current;
+    if (whoosh) {
+      whoosh.currentTime = 0;
+      whoosh.play().catch(() => {});
+    }
+  }, []);
+
+  // Called by Apple once debris is gone — remount a fresh apple high above.
+  const handleCleared = useCallback(() => {
+    if (statusRef.current !== "blowing") return;
+    setCrushProgress(0);
+    setAppleKey((key) => key + 1);
+    setStatus("dropping");
+    statusRef.current = "dropping";
+  }, []);
+
+  // Called by Apple when the fresh apple reaches its rest position.
+  const handleSettled = useCallback(() => {
+    if (statusRef.current !== "dropping") return;
+    setStatus("idle");
+    statusRef.current = "idle";
+  }, []);
+
+  return {
+    crushProgress,
+    status,
+    appleKey,
+    smash,
+    startBlow,
+    handleCleared,
+    handleSettled,
+  };
 }

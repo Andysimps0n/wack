@@ -5,7 +5,14 @@ import CubeBackground from "./CubeBackground";
 import Apple from "./Apple";
 import CameraSetup from "./CameraSetup";
 
-export default function Wack({ crushProgress }) {
+export default function Wack({
+  appleKey,
+  crushProgress,
+  status,
+  onStartBlow,
+  onCleared,
+  onSettled,
+}) {
   return (
     <div className="wack-wrapper">
       <Canvas
@@ -15,7 +22,14 @@ export default function Wack({ crushProgress }) {
         <CameraSetup />
 
         <Physics gravity={[0, -13, 0]} debug={false}>
-          <Apple crushProgress={crushProgress} />
+          <Apple
+            key={appleKey}
+            crushProgress={crushProgress}
+            status={status}
+            onStartBlow={onStartBlow}
+            onCleared={onCleared}
+            onSettled={onSettled}
+          />
           <CubeBackground size={20} />
         </Physics>
 
