@@ -1,13 +1,14 @@
 import './App.css'
 import Wack from './components/Wack'
 import Butter from './components/Butter'
-import ThemeSwitcher from './components/ThemeSwitcher'
-import SmashButton from './components/SmashButton'
+import WackUI from './components/WackUI'
 import useSmashCrush from './hooks/useSmashCrush'
 import { useState } from 'react'
 
 function App() {
-  const [theme, setTheme] = useState('apple')
+  const [theme] = useState('apple')
+  // Accumulated Y rotation in radians — one full bar swipe adds ±2π.
+  const [rotationY, setRotationY] = useState(0)
   const {
     crushProgress,
     status,
@@ -18,11 +19,19 @@ function App() {
     handleSettled,
   } = useSmashCrush()
 
+  function handleRotateDelta(deltaRadians) {
+    setRotationY((prev) => prev + deltaRadians)
+  }
+
   return (
     <div className={theme === 'apple' ? 'scroll-container' : 'butter-container'}>
-      {/* <ThemeSwitcher theme={theme} onThemeChange={setTheme} /> */}
       {theme === 'apple' && (
-        <SmashButton status={status} onSmash={smash} />
+        <WackUI
+          status={status}
+          onSmash={smash}
+          rotationY={rotationY}
+          onRotateDelta={handleRotateDelta}
+        />
       )}
       <div className="sticky-canvas">
         {theme === 'apple' ? (
@@ -30,6 +39,7 @@ function App() {
             appleKey={appleKey}
             crushProgress={crushProgress}
             status={status}
+            rotationY={rotationY}
             onStartBlow={startBlow}
             onCleared={handleCleared}
             onSettled={handleSettled}

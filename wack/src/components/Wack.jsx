@@ -9,6 +9,7 @@ export default function Wack({
   appleKey,
   crushProgress,
   status,
+  rotationY,
   onStartBlow,
   onCleared,
   onSettled,
@@ -26,6 +27,7 @@ export default function Wack({
             key={appleKey}
             crushProgress={crushProgress}
             status={status}
+            rotationY={rotationY}
             onStartBlow={onStartBlow}
             onCleared={onCleared}
             onSettled={onSettled}

@@ -101,6 +101,7 @@ function configureAppleMaterials(root) {
 export default function Apple({
   crushProgress,
   status,
+  rotationY = 0,
   onStartBlow,
   onCleared,
   onSettled,
@@ -111,6 +112,7 @@ export default function Apple({
   // Phase is read every frame via ref; React state is not needed for render.
   const phaseRef = useRef(isDropping ? "dropping" : "intact");
   const visualRef = useRef(null);
+  const draggingRef = useRef(false);
   const colliderRef = useRef(null);
   const appleBodyRef = useRef(null);
   const chipBodyRefs = useRef(new Map());
@@ -119,6 +121,9 @@ export default function Apple({
   crushProgressRef.current = crushProgress;
   const statusRef = useRef(status);
   statusRef.current = status;
+  // Same pattern for Y spin from the rotate bar (avoid stale props in useFrame).
+  const rotationYRef = useRef(rotationY);
+  rotationYRef.current = rotationY;
 
   const [chips, setChips] = useState([]);
   const chipsRef = useRef(chips);
@@ -149,6 +154,10 @@ export default function Apple({
       ) {
         toMove.push(child);
       }
+    });
+    bodyRoot.traverse((child) => {
+      if (!child.isMesh) return;
+      child.geometry = child.geometry.clone();
     });
 
     bodyRoot.add(stemAndLeaf);
@@ -287,6 +296,11 @@ export default function Apple({
           readySet.has(chip.id) ? { ...chip, appleCollision: true } : chip
         )
       );
+    }
+
+    // Apply spin from the rotate bar every frame (works in every phase).
+    if (visualRef.current) {
+      visualRef.current.rotation.y = rotationYRef.current;
     }
 
     // --- Cleanup: blow debris up, then clear ---
@@ -478,6 +492,7 @@ export default function Apple({
 
   return (
     <>
+
       {chipBodies}
       <RigidBody
         ref={appleBodyRef}
@@ -500,7 +515,29 @@ export default function Apple({
           ]}
         />
         <group ref={visualRef} scale={APPLE_SCALE}>
-          <primitive object={fruitBody} />
+          <primitive 
+          object={fruitBody}  
+          onPointerDown={(e) => {
+            draggingRef.current = true;
+            e.stopPropagation()
+            console.log('hit', e.point)
+          }}
+          onPointerMove={(e)=>{
+            if (!draggingRef.current) return;
+            e.stopPropagation()
+            console.log('dragging')
+          }}
+          onPointerUp={() => {
+            draggingRef.current = false;
+          }}
+          onPointerLeave={() => {
+            draggingRef.current = false;
+          }}
+          onPointerCancel={() => {
+            draggingRef.current = false;
+          }}  
+          
+          />
           <primitive object={stemAndLeaf} />
           <primitive object={waxGroup} />
         </group>
