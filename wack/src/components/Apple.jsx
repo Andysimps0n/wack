@@ -12,6 +12,7 @@ import {
   FrontSide,
   Group,
   MathUtils,
+  Matrix3,
   MeshPhysicalMaterial,
   Vector3,
 } from "three";
@@ -35,10 +36,25 @@ import {
   RESPAWN_DROP_SEC,
 } from "../constants/crush";
 import {
+  SQUISH_DEPTH_SCALE,
+  SQUISH_WAX_BREAK_DEPTH,
+  SQUISH_WAX_RADIUS,
+  SQUISH_RECOVER_RATE,
+  SQUISH_RECOVER_EPS,
+} from "../constants/dent";
+import {
+  captureRestPositions,
+  lerpMeshesTowardRest,
+  restoreRestPositions,
+  squishMeshWithPlane,
+} from "../utils/dentMesh";
+import {
   collectWaxSlices,
   isWaxMesh,
   sliceRestTopY,
   splitWaxFromApple,
+  waxDistanceToPoint,
+  waxPlanePenetration,
 } from "../utils/waxContact";
 
 const APPLE_POSITION = [0, 2, 0];
@@ -83,6 +99,37 @@ function prepareDetachedWax(object) {
   });
 }
 
+// Shared by smash crush-line and drag-to-squish plane contact.
+function detachWaxSlice(slice, groupY, chipAgeRef) {
+  slice.detached = true;
+  slice.object.removeFromParent();
+  prepareDetachedWax(slice.object);
+  // Full (un-squashed) scale so the chip keeps its baked shell thickness.
+  const chipScale = APPLE_SCALE * WAX_CHIP_SCALE;
+  chipAgeRef.current.set(slice.id, 0);
+  return {
+    id: slice.id,
+    object: slice.object,
+    // Nudge outward so the hull starts clear of the apple body.
+    position: [
+      APPLE_POSITION[0] + slice.outward.x * WAX_CHIP_SPAWN_OFFSET,
+      APPLE_POSITION[1] + groupY,
+      APPLE_POSITION[2] + slice.outward.z * WAX_CHIP_SPAWN_OFFSET,
+    ],
+    scale: [chipScale, chipScale, chipScale],
+    velocity: [
+      slice.outward.x * WAX_CHIP_IMPULSE,
+      0.35,
+      slice.outward.z * WAX_CHIP_IMPULSE,
+    ],
+    appleCollision: false,
+  };
+}
+
+// Scratch for turning a face normal into world space on pointer down.
+const faceNormalMatrix = new Matrix3();
+const squishPlaneOrigin = new Vector3();
+
 function configureAppleMaterials(root) {
   root.traverse((child) => {
     if (!child.isMesh) return;
@@ -113,6 +160,12 @@ export default function Apple({
   const phaseRef = useRef(isDropping ? "dropping" : "intact");
   const visualRef = useRef(null);
   const draggingRef = useRef(false);
+  // Locked on pointer-down: click point + outward normal (world space).
+  const squishHitRef = useRef(null);
+  const dragStartClientRef = useRef({ x: 0, y: 0 });
+  const maxDepthRef = useRef(0);
+  // After release, ease fruit verts back toward the rest snapshot.
+  const recoveringRef = useRef(false);
   const colliderRef = useRef(null);
   const appleBodyRef = useRef(null);
   const chipBodyRefs = useRef(new Map());
@@ -159,6 +212,8 @@ export default function Apple({
       if (!child.isMesh) return;
       child.geometry = child.geometry.clone();
     });
+    // Snapshot undeformed verts so we can spring back after a squish.
+    captureRestPositions(bodyRoot);
 
     bodyRoot.add(stemAndLeaf);
     for (const mesh of toMove) stemAndLeaf.attach(mesh);
@@ -303,6 +358,19 @@ export default function Apple({
       visualRef.current.rotation.y = rotationYRef.current;
     }
 
+    // After the user lets go, ease the fruit back to its rest shape.
+    // Wax chips that already fell stay off — we only morph fruit verts.
+    if (statusRef.current !== "idle") {
+      recoveringRef.current = false;
+    } else if (recoveringRef.current && !draggingRef.current) {
+      const alpha = 1 - Math.exp(-SQUISH_RECOVER_RATE * delta);
+      const maxDelta = lerpMeshesTowardRest(fruitBody, alpha);
+      if (maxDelta <= SQUISH_RECOVER_EPS) {
+        restoreRestPositions(fruitBody);
+        recoveringRef.current = false;
+      }
+    }
+
     // --- Cleanup: blow debris up, then clear ---
     if (statusRef.current === "blowing") {
       // Re-apply for a few frames in case the body is still "fixed" on the
@@ -423,37 +491,109 @@ export default function Apple({
       const restTopY = sliceRestTopY(slice, APPLE_POSITION[1], APPLE_SCALE);
 
       if (crushBottom - restTopY <= WAX_CONTACT_EPS) {
-        slice.detached = true;
-        slice.object.removeFromParent();
-        prepareDetachedWax(slice.object);
-        // Use full (un-squashed) scale so the chip keeps its baked shell
-        // thickness — inheriting squashY made shards look paper-flat.
-        const chipScale = APPLE_SCALE * WAX_CHIP_SCALE;
-        chipAgeRef.current.set(slice.id, 0);
-        detachedNow.push({
-          id: slice.id,
-          object: slice.object,
-          // Nudge outward so the hull starts clear of the apple body.
-          // Chip RigidBodies use world space; add APPLE_POSITION back on Y.
-          position: [
-            APPLE_POSITION[0] + slice.outward.x * WAX_CHIP_SPAWN_OFFSET,
-            APPLE_POSITION[1] + groupY,
-            APPLE_POSITION[2] + slice.outward.z * WAX_CHIP_SPAWN_OFFSET,
-          ],
-          scale: [chipScale, chipScale, chipScale],
-          velocity: [
-            slice.outward.x * WAX_CHIP_IMPULSE,
-            0.35,
-            slice.outward.z * WAX_CHIP_IMPULSE,
-          ],
-          appleCollision: false,
-        });
+        detachedNow.push(detachWaxSlice(slice, groupY, chipAgeRef));
       }
     }
     if (detachedNow.length > 0) {
       setChips((prev) => [...prev, ...detachedNow]);
     }
   });
+
+  // Push the locked tangent plane inward by `depth`, squash fruit, knock wax.
+  // Always rebuild from rest so `depth` is absolute (not stacked clamps).
+  function applySquishAtDepth(depth) {
+    const hit = squishHitRef.current;
+    if (!hit) return;
+
+    restoreRestPositions(fruitBody);
+
+    // origin moves inward along -N as depth grows (metal plate pressing in).
+    squishPlaneOrigin.copy(hit.p0).addScaledVector(hit.outward, -depth);
+
+    fruitBody.traverse((child) => {
+      if (!child.isMesh) return;
+      squishMeshWithPlane(child, squishPlaneOrigin, hit.outward);
+    });
+
+    // A click (depth 0) must never knock wax — the infinite plane would
+    // otherwise treat the whole far side of the apple as "already past".
+    if (depth < SQUISH_WAX_BREAK_DEPTH) return;
+
+    const groupY = visualRef.current?.position.y ?? 0;
+    const detachedNow = [];
+    for (const slice of waxSlices) {
+      if (slice.detached) continue;
+      // Keep knock-off local to the press point.
+      if (waxDistanceToPoint(slice, hit.p0) > SQUISH_WAX_RADIUS) continue;
+      // Touch alone is not enough — plane must dig past break depth.
+      if (
+        waxPlanePenetration(slice, squishPlaneOrigin, hit.outward) >=
+        SQUISH_WAX_BREAK_DEPTH
+      ) {
+        detachedNow.push(detachWaxSlice(slice, groupY, chipAgeRef));
+      }
+    }
+    if (detachedNow.length > 0) {
+      setChips((prev) => [...prev, ...detachedNow]);
+    }
+  }
+
+  function endSquishDrag() {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    squishHitRef.current = null;
+    maxDepthRef.current = 0;
+    // Start the slow return to the undeformed apple.
+    recoveringRef.current = true;
+  }
+
+  function onFruitPointerDown(e) {
+    if (statusRef.current !== "idle") return;
+    if (!e.face) return;
+
+    e.stopPropagation();
+    e.target.setPointerCapture?.(e.pointerId);
+
+    // A new press cancels any in-progress spring-back.
+    recoveringRef.current = false;
+
+    // Face normals are in the hit mesh's local space — lift to world.
+    faceNormalMatrix.getNormalMatrix(e.object.matrixWorld);
+    const outward = e.face.normal
+      .clone()
+      .applyMatrix3(faceNormalMatrix)
+      .normalize();
+
+    squishHitRef.current = {
+      p0: e.point.clone(),
+      outward,
+    };
+    dragStartClientRef.current = { x: e.clientX, y: e.clientY };
+    maxDepthRef.current = 0;
+    draggingRef.current = true;
+
+    // Tap alone leaves a contact mark (depth 0 plane at the surface).
+    applySquishAtDepth(0);
+  }
+
+  function onFruitPointerMove(e) {
+    if (!draggingRef.current || !squishHitRef.current) return;
+    if (statusRef.current !== "idle") {
+      endSquishDrag();
+      return;
+    }
+
+    e.stopPropagation();
+
+    // Drag-away distance in screen pixels → how far the plane presses in.
+    const dx = e.clientX - dragStartClientRef.current.x;
+    const dy = e.clientY - dragStartClientRef.current.y;
+    const dragAway = Math.hypot(dx, dy);
+    const depth = Math.max(maxDepthRef.current, dragAway * SQUISH_DEPTH_SCALE);
+    maxDepthRef.current = depth;
+
+    applySquishAtDepth(depth);
+  }
 
   const isBlowing = status === "blowing";
   const appleBodyType = isBlowing
@@ -515,28 +655,13 @@ export default function Apple({
           ]}
         />
         <group ref={visualRef} scale={APPLE_SCALE}>
-          <primitive 
-          object={fruitBody}  
-          onPointerDown={(e) => {
-            draggingRef.current = true;
-            e.stopPropagation()
-            console.log('hit', e.point)
-          }}
-          onPointerMove={(e)=>{
-            if (!draggingRef.current) return;
-            e.stopPropagation()
-            console.log('dragging')
-          }}
-          onPointerUp={() => {
-            draggingRef.current = false;
-          }}
-          onPointerLeave={() => {
-            draggingRef.current = false;
-          }}
-          onPointerCancel={() => {
-            draggingRef.current = false;
-          }}  
-          
+          <primitive
+            object={fruitBody}
+            onPointerDown={onFruitPointerDown}
+            onPointerMove={onFruitPointerMove}
+            onPointerUp={endSquishDrag}
+            onPointerCancel={endSquishDrag}
+            onLostPointerCapture={endSquishDrag}
           />
           <primitive object={stemAndLeaf} />
           <primitive object={waxGroup} />

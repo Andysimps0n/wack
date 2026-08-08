@@ -68,3 +68,62 @@ export function collectWaxSlices(root, prefix) {
 export function sliceRestTopY(slice, appleBaseY, appleScale) {
   return appleBaseY + slice.localMaxY * appleScale;
 }
+
+const waxBox = new Box3();
+const waxCorner = new Vector3();
+
+/**
+ * World-space distance from a point to the closest point on a wax AABB.
+ * Used to keep squish knock-off local to the press — an infinite plane would
+ * otherwise count far-side wax as "already penetrated".
+ */
+export function waxDistanceToPoint(slice, point) {
+  waxBox.setFromObject(slice.object);
+  waxBox.clampPoint(point, waxCorner);
+  return waxCorner.distanceTo(point);
+}
+
+/**
+ * How far the plane has pushed past the nearest point on a wax slice's AABB,
+ * counting only wax the plane is approaching from the outside.
+ *
+ * Signed distance of a point X: (X - planeOrigin) · outwardNormal
+ * - minSigned > 0              → plane has not reached the wax → 0
+ * - maxSigned < 0              → wax is entirely behind the plane (other side
+ *                                of the apple / already inside) → 0
+ * - straddling the plane       → penetration = -minSigned
+ */
+export function waxPlanePenetration(slice, planeOrigin, outwardNormal) {
+  waxBox.setFromObject(slice.object);
+  const { min, max } = waxBox;
+
+  let minSigned = Infinity;
+  let maxSigned = -Infinity;
+
+  for (let ix = 0; ix < 2; ix++) {
+    for (let iy = 0; iy < 2; iy++) {
+      for (let iz = 0; iz < 2; iz++) {
+        waxCorner.set(
+          ix === 0 ? min.x : max.x,
+          iy === 0 ? min.y : max.y,
+          iz === 0 ? min.z : max.z
+        );
+        const signed =
+          (waxCorner.x - planeOrigin.x) * outwardNormal.x +
+          (waxCorner.y - planeOrigin.y) * outwardNormal.y +
+          (waxCorner.z - planeOrigin.z) * outwardNormal.z;
+        if (signed < minSigned) minSigned = signed;
+        if (signed > maxSigned) maxSigned = signed;
+      }
+    }
+  }
+
+  // Still outside — plane hasn't touched this chip.
+  if (minSigned >= 0) return 0;
+  // Entirely behind the plane (e.g. opposite side of the apple). An infinite
+  // plane always "contains" that half of space; it is not a real crush.
+  if (maxSigned < 0) return 0;
+
+  // Plane cuts through the AABB: how deep past the nearest corner.
+  return -minSigned;
+}
